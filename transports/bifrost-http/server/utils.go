@@ -99,6 +99,12 @@ func (s *BifrostHTTPServer) CollectObservabilityPlugins() []schemas.Observabilit
 		}
 	}
 
+	for _, plugin := range s.Config.GetLoadedHTTPTransportPlugins() {
+		if observabilityPlugin, ok := plugin.(schemas.ObservabilityPlugin); ok {
+			observabilityPlugins = append(observabilityPlugins, observabilityPlugin)
+		}
+	}
+
 	return observabilityPlugins
 }
 
