@@ -66,6 +66,12 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 			return fmt.Errorf("failed to unmarshal postgres config: %w", err)
 		}
 		c.Config = &postgresConfig
+	case LogStoreTypeClickHouse:
+		var clickHouseConfig ClickHouseConfig
+		if err := json.Unmarshal(temp.Config, &clickHouseConfig); err != nil {
+			return fmt.Errorf("failed to unmarshal clickhouse config: %w", err)
+		}
+		c.Config = &clickHouseConfig
 	default:
 		return fmt.Errorf("unknown log store type: %s", temp.Type)
 	}

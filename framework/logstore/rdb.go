@@ -288,13 +288,19 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 			}
 		}
 		if len(valid) > 0 {
-			if s.db.Dialector.Name() == "postgres" {
+			switch s.db.Dialector.Name() {
+			case "postgres":
 				// Match the same loose-JSON guard used by aggregateCacheHits so the regex extract is safe.
 				baseQuery = baseQuery.Where(
 					"cache_debug IS NOT NULL AND cache_debug <> '' AND cache_debug ~ '^\\s*\\{.*\\}\\s*$' AND substring(cache_debug from '\"hit_type\"[[:space:]]*:[[:space:]]*\"([^\"]+)\"') IN ?",
 					valid,
 				)
-			} else {
+		case "clickhouse":
+			baseQuery = baseQuery.Where(
+				"cache_debug IS NOT NULL AND cache_debug != '' AND isValidJSON(cache_debug) AND JSONExtract(cache_debug, 'hit_type', 'String') IN ?",
+				valid,
+			)
+			default:
 				baseQuery = baseQuery.Where(
 					"cache_debug IS NOT NULL AND cache_debug != '' AND json_valid(cache_debug) AND json_extract(cache_debug, '$.hit_type') IN ?",
 					valid,
@@ -316,9 +322,12 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 		dialect := s.db.Dialector.Name()
 		// Guard must match the partial-index predicate so the planner uses the GIN index.
 		// SQLite does not support IS JSON OBJECT, so fall back to the equivalent json_type check.
-		if dialect == "postgres" {
+		switch dialect {
+		case "postgres":
 			baseQuery = baseQuery.Where("metadata IS NOT NULL AND metadata IS JSON OBJECT")
-		} else {
+		case "clickhouse":
+			baseQuery = baseQuery.Where("metadata IS NOT NULL AND isValidJSON(metadata) AND JSONType(metadata) = 'Object'")
+		default:
 			baseQuery = baseQuery.Where("metadata IS NOT NULL AND json_valid(metadata) AND json_type(metadata) = 'object'")
 		}
 		for key, value := range filters.MetadataFilters {
@@ -332,6 +341,14 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 				// strings — always match as a string to avoid type mismatch with jsonb.
 				jsonFragment := fmt.Sprintf(`{%q: %q}`, key, value)
 				baseQuery = baseQuery.Where("metadata::jsonb @> ?::jsonb", jsonFragment)
+			case "clickhouse":
+				if value == "true" {
+					baseQuery = baseQuery.Where("JSONExtractBool(metadata, ?) = 1", key)
+				} else if value == "false" {
+					baseQuery = baseQuery.Where("JSONExtractBool(metadata, ?) = 0", key)
+				} else {
+					baseQuery = baseQuery.Where("JSON_VALUE(metadata, concat('$.\"', ?, '\"')) = ?", key, value)
+				}
 			default:
 				// SQLite: quote the member name so dots/hyphens stay part of the key
 				path := `$."` + key + `"`
@@ -890,6 +907,24 @@ func (s *RDBLogStore) listSelectColumns() string {
 			ELSE bifrost_safe_jsonb(responses_input_history)
 			END AS responses_input_history`
 		outputMessageExpr = `CASE WHEN object_type = 'realtime.turn' THEN output_message ELSE NULL END AS output_message`
+	case "clickhouse":
+		inputHistoryExpr = `CASE
+			WHEN object_type = 'realtime.turn' THEN input_history
+			WHEN input_history IS NOT NULL AND input_history != '' AND input_history != '[]'
+			     AND isValidJSON(input_history) = 1
+			     AND JSONType(input_history) = 'Array'
+			     AND JSONArrayLength(input_history) > 0
+			THEN '[' || JSONExtractArrayRaw(input_history)[-1] || ']'
+			ELSE input_history END AS input_history`
+		responsesInputExpr = `CASE
+			WHEN object_type = 'realtime.turn' THEN responses_input_history
+			WHEN responses_input_history IS NOT NULL AND responses_input_history != '' AND responses_input_history != '[]'
+			     AND isValidJSON(responses_input_history) = 1
+			     AND JSONType(responses_input_history) = 'Array'
+			     AND JSONArrayLength(responses_input_history) > 0
+			THEN '[' || JSONExtractArrayRaw(responses_input_history)[-1] || ']'
+			ELSE responses_input_history END AS responses_input_history`
+		outputMessageExpr = `CASE WHEN object_type = 'realtime.turn' THEN output_message ELSE NULL END AS output_message`
 	default: // sqlite
 		inputHistoryExpr = `CASE
 			WHEN object_type = 'realtime.turn' THEN input_history
@@ -1049,7 +1084,8 @@ func (s *RDBLogStore) aggregateCacheHits(ctx context.Context, base *gorm.DB, fil
 		SemanticHits sql.NullInt64 `gorm:"column:semantic_hits"`
 	}
 	q := s.applyFilters(base, filters)
-	if s.db.Dialector.Name() == "postgres" {
+	switch s.db.Dialector.Name() {
+	case "postgres":
 		q = q.Where("cache_debug IS NOT NULL AND cache_debug <> '' AND cache_debug ~ '^\\s*\\{.*\\}\\s*$'")
 		if err := q.Select(
 			`SUM(CASE WHEN substring(cache_debug from '"hit_type"[[:space:]]*:[[:space:]]*"([^"]+)"') = 'direct'   THEN 1 ELSE 0 END) AS direct_hits, ` +
@@ -1057,7 +1093,15 @@ func (s *RDBLogStore) aggregateCacheHits(ctx context.Context, base *gorm.DB, fil
 		).Scan(&result).Error; err != nil {
 			return nil, nil, fmt.Errorf("failed to aggregate cache-hit stats: %w", err)
 		}
-	} else {
+	case "clickhouse":
+		q = q.Where("cache_debug IS NOT NULL AND cache_debug != '' AND isValidJSON(cache_debug)")
+		if err := q.Select(
+			`SUM(CASE WHEN JSONExtract(cache_debug, 'hit_type', 'String') = 'direct'   THEN 1 ELSE 0 END) AS direct_hits, ` +
+				`SUM(CASE WHEN JSONExtract(cache_debug, 'hit_type', 'String') = 'semantic' THEN 1 ELSE 0 END) AS semantic_hits`,
+		).Scan(&result).Error; err != nil {
+			return nil, nil, fmt.Errorf("failed to aggregate cache-hit stats: %w", err)
+		}
+	default:
 		q = q.Where("cache_debug IS NOT NULL AND cache_debug != '' AND json_valid(cache_debug)")
 		if err := q.Select(
 			`SUM(CASE WHEN json_extract(cache_debug, '$.hit_type') = 'direct'   THEN 1 ELSE 0 END) AS direct_hits, ` +
@@ -3351,9 +3395,12 @@ func (s *RDBLogStore) GetDistinctMetadataKeys(ctx context.Context, limit int, qu
 	var metadataStrings []string
 	// Guard must match the partial-index predicate so the planner uses the GIN index.
 	var metadataGuard string
-	if s.db.Dialector.Name() == "postgres" {
+	switch s.db.Dialector.Name() {
+	case "postgres":
 		metadataGuard = "metadata IS NOT NULL AND metadata IS JSON OBJECT AND metadata != '{}' AND timestamp >= ?"
-	} else {
+	case "clickhouse":
+		metadataGuard = "metadata IS NOT NULL AND isValidJSON(metadata) AND JSONType(metadata) = 'Object' AND metadata != '{}' AND timestamp >= ?"
+	default:
 		metadataGuard = "metadata IS NOT NULL AND json_valid(metadata) AND json_type(metadata) = 'object' AND metadata != '{}' AND timestamp >= ?"
 	}
 	err := s.ScopedDB(ctx).Model(&Log{}).
