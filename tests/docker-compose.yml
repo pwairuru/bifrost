@@ -192,6 +192,26 @@ services:
         networks:
             bifrost_network:
                 ipv4_address: 172.28.0.15
+    # ClickHouse instance for logs store tests
+    clickhouse:
+        image: clickhouse/clickhouse-server:25.10.2.65
+        ports:
+            - "9001:9000" # Native protocol
+            - "8123:8123" # HTTP protocol
+        environment:
+            - CLICKHOUSE_DB=bifrost
+            - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
+        volumes:
+            - clickhouse_data:/var/lib/clickhouse
+        networks:
+            bifrost_network:
+                ipv4_address: 172.28.0.20
+        healthcheck:
+            test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+            interval: 30s
+            timeout: 10s
+            retries: 3
+
     # Postgres instance for configstore and encryption tests
     postgres:
         image: postgres:16-alpine
@@ -227,4 +247,5 @@ networks:
 volumes:
     weaviate_data:
     redis_data:
-    qdrant_data:    
+    qdrant_data:
+    clickhouse_data:    

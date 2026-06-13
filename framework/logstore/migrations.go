@@ -365,6 +365,169 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	return nil
 }
 
+// clickhouseMigrator tracks applied ClickHouse migrations in a dedicated table.
+// GORM's ClickHouse driver does not support AutoMigrate, so we manage the
+// migrations metadata table ourselves with raw ClickHouse SQL.
+type clickhouseMigrator struct {
+	db  *gorm.DB
+	ctx context.Context
+}
+
+func newClickhouseMigrator(ctx context.Context, db *gorm.DB) *clickhouseMigrator {
+	return &clickhouseMigrator{db: db, ctx: ctx}
+}
+
+func (m *clickhouseMigrator) init() error {
+	return m.db.WithContext(m.ctx).Exec(`
+		CREATE TABLE IF NOT EXISTS schema_migrations (
+			id String,
+			applied_at DateTime64(3)
+		) ENGINE = MergeTree()
+		ORDER BY (id)
+	`).Error
+}
+
+func (m *clickhouseMigrator) isApplied(id string) (bool, error) {
+	var count int64
+	err := m.db.WithContext(m.ctx).
+		Table("schema_migrations").
+		Where("id = ?", id).
+		Count(&count).Error
+	return count > 0, err
+}
+
+func (m *clickhouseMigrator) markApplied(id string) error {
+	return m.db.WithContext(m.ctx).Exec(
+		"INSERT INTO schema_migrations (id, applied_at) VALUES (?, now64(3))", id,
+	).Error
+}
+
+func (m *clickhouseMigrator) apply(id string, fn func(tx *gorm.DB) error) error {
+	done, err := m.isApplied(id)
+	if err != nil {
+		return fmt.Errorf("clickhouse migration %s: check: %w", id, err)
+	}
+	if done {
+		return nil
+	}
+	if err := fn(m.db.WithContext(m.ctx)); err != nil {
+		return fmt.Errorf("clickhouse migration %s: apply: %w", id, err)
+	}
+	if err := m.markApplied(id); err != nil {
+		return fmt.Errorf("clickhouse migration %s: record: %w", id, err)
+	}
+	return nil
+}
+
+func triggerClickhouseMigrations(ctx context.Context, db *gorm.DB) error {
+	m := newClickhouseMigrator(ctx, db)
+	if err := m.init(); err != nil {
+		return fmt.Errorf("clickhouse migration init: %w", err)
+	}
+
+	if err := m.apply("logs_init", func(tx *gorm.DB) error {
+		return tx.Exec(`
+			CREATE TABLE IF NOT EXISTS logs (
+				id String,
+				inc_number Nullable(Int64),
+				parent_request_id Nullable(String),
+				timestamp DateTime64(3),
+				object_type String,
+				provider String,
+				model String,
+				alias Nullable(String),
+				canonical_model_name Nullable(String),
+				alias_model_family Nullable(String),
+				number_of_retries Int32 DEFAULT 0,
+				fallback_index Int32 DEFAULT 0,
+				selected_key_id String,
+				selected_key_name String,
+				attempt_trail String,
+				virtual_key_id Nullable(String),
+				virtual_key_name Nullable(String),
+				routing_engines_used Nullable(String),
+				routing_rule_id Nullable(String),
+				routing_rule_name Nullable(String),
+				selected_prompt_name Nullable(String),
+				selected_prompt_version Nullable(String),
+				selected_prompt_id Nullable(String),
+				user_id Nullable(String),
+				user_name Nullable(String),
+				team_id Nullable(String),
+				team_name Nullable(String),
+				customer_id Nullable(String),
+				customer_name Nullable(String),
+				business_unit_id Nullable(String),
+				business_unit_name Nullable(String),
+				team_ids Nullable(String),
+				team_names Nullable(String),
+				customer_ids Nullable(String),
+				customer_names Nullable(String),
+				business_unit_ids Nullable(String),
+				business_unit_names Nullable(String),
+				input_history String,
+				responses_input_history String,
+				output_message String,
+				responses_output String,
+				embedding_output String,
+				rerank_output String,
+				ocr_output String,
+				params String,
+				tools String,
+				tool_calls String,
+				speech_input String,
+				transcription_input String,
+				ocr_input String,
+				image_generation_input String,
+				image_edit_input String,
+				image_variation_input String,
+				video_generation_input String,
+				speech_output String,
+				transcription_output String,
+				image_generation_output String,
+				list_models_output String,
+				video_generation_output String,
+				video_retrieve_output String,
+				video_download_output String,
+				video_list_output String,
+				video_delete_output String,
+				cache_debug String,
+				latency Nullable(Float64),
+				token_usage String,
+				cost Nullable(Float64),
+				status String,
+				stop_reason Nullable(String),
+				error_details String,
+				stream UInt8 DEFAULT 0,
+				content_summary String,
+				raw_request String,
+				raw_response String,
+				passthrough_request_body String,
+				passthrough_response_body String,
+				routing_engine_logs String,
+				plugin_logs String,
+				metadata Nullable(String),
+				is_large_payload_request UInt8 DEFAULT 0,
+				is_large_payload_response UInt8 DEFAULT 0,
+				has_object UInt8 DEFAULT 0,
+				cluster_node_id Nullable(String),
+				budget_ids Nullable(String),
+				rate_limit_ids Nullable(String),
+				prompt_tokens Int32 DEFAULT 0,
+				completion_tokens Int32 DEFAULT 0,
+				total_tokens Int32 DEFAULT 0,
+				cached_read_tokens Int32 DEFAULT 0,
+				created_at DateTime64(3)
+			) ENGINE = MergeTree()
+			ORDER BY (timestamp, id)
+		`).Error
+	}); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 // migrationInit creates the logs table if it does not exist.
 func migrationInit(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
