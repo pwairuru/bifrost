@@ -34,9 +34,17 @@
   
   # Copy source code and dependencies
   COPY transports/ ./
-  
+
+  # Copy framework module (needed for clickhouse log store - not in published module)
+  COPY framework/ /app-framework
+  COPY framework/go.sum /app-framework-go.sum
+  RUN printf '\nreplace github.com/maximhq/bifrost/framework => /app-framework\n' >> go.mod && \
+    cat /app-framework-go.sum >> go.sum && \
+    rm /app-framework-go.sum && \
+    go mod tidy
+
   COPY --from=ui-builder /app/out ./bifrost-http/ui
-  
+
   # Build the binary with CGO enabled and static SQLite linking
   ENV GOWORK=off
   ARG VERSION=unknown
