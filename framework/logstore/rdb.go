@@ -1162,6 +1162,13 @@ func (s *RDBLogStore) GetHistogram(ctx context.Context, filters SearchFilters, b
 			SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
 			SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error_count
 		`, bucketSizeSeconds, bucketSizeSeconds)
+	case "clickhouse":
+		selectClause = fmt.Sprintf(`
+			CAST(FLOOR(toUnixTimestamp(timestamp) / %d) * %d AS Int64) as bucket_timestamp,
+			COUNT(*) as total,
+			SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
+			SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error_count
+		`, bucketSizeSeconds, bucketSizeSeconds)
 	default:
 		// PostgreSQL (and others): use EXTRACT(EPOCH FROM timestamp)
 		selectClause = fmt.Sprintf(`
@@ -1281,6 +1288,14 @@ func (s *RDBLogStore) GetTokenHistogram(ctx context.Context, filters SearchFilte
 	case "mysql":
 		selectClause = fmt.Sprintf(`
 			(FLOOR(UNIX_TIMESTAMP(timestamp) / %d) * %d) as bucket_timestamp,
+			COALESCE(SUM(prompt_tokens), 0) as prompt_tokens,
+			COALESCE(SUM(completion_tokens), 0) as completion_tokens,
+			COALESCE(SUM(total_tokens), 0) as total_tokens,
+			COALESCE(SUM(cached_read_tokens), 0) as cached_read_tokens
+		`, bucketSizeSeconds, bucketSizeSeconds)
+	case "clickhouse":
+		selectClause = fmt.Sprintf(`
+			CAST(FLOOR(toUnixTimestamp(timestamp) / %d) * %d AS Int64) as bucket_timestamp,
 			COALESCE(SUM(prompt_tokens), 0) as prompt_tokens,
 			COALESCE(SUM(completion_tokens), 0) as completion_tokens,
 			COALESCE(SUM(total_tokens), 0) as total_tokens,
@@ -1408,6 +1423,12 @@ func (s *RDBLogStore) GetCostHistogram(ctx context.Context, filters SearchFilter
 			model,
 			COALESCE(SUM(cost), 0) as total_cost
 		`, bucketSizeSeconds, bucketSizeSeconds)
+	case "clickhouse":
+		selectClause = fmt.Sprintf(`
+			CAST(FLOOR(toUnixTimestamp(timestamp) / %d) * %d AS Int64) as bucket_timestamp,
+			model,
+			COALESCE(SUM(cost), 0) as total_cost
+		`, bucketSizeSeconds, bucketSizeSeconds)
 	default:
 		selectClause = fmt.Sprintf(`
 			CAST(FLOOR(EXTRACT(EPOCH FROM timestamp) / %d) * %d AS BIGINT) as bucket_timestamp,
@@ -1529,6 +1550,14 @@ func (s *RDBLogStore) GetModelHistogram(ctx context.Context, filters SearchFilte
 	case "mysql":
 		selectClause = fmt.Sprintf(`
 			(FLOOR(UNIX_TIMESTAMP(timestamp) / %d) * %d) as bucket_timestamp,
+			model,
+			COUNT(*) as total,
+			SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
+			SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error_count
+		`, bucketSizeSeconds, bucketSizeSeconds)
+	case "clickhouse":
+		selectClause = fmt.Sprintf(`
+			CAST(FLOOR(toUnixTimestamp(timestamp) / %d) * %d AS Int64) as bucket_timestamp,
 			model,
 			COUNT(*) as total,
 			SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
@@ -1668,9 +1697,56 @@ func (s *RDBLogStore) GetLatencyHistogram(ctx context.Context, filters SearchFil
 		return s.getLatencyHistogramSQLite(ctx, baseQuery, filters, bucketSizeSeconds)
 	case "mysql":
 		return s.getLatencyHistogramMySQL(ctx, baseQuery, filters, bucketSizeSeconds)
+	case "clickhouse":
+		return s.getLatencyHistogramClickHouse(ctx, baseQuery, filters, bucketSizeSeconds)
 	default:
 		return s.getLatencyHistogramPercentileCont(ctx, baseQuery, filters, bucketSizeSeconds)
 	}
+}
+
+// getLatencyHistogramClickHouse uses ClickHouse's quantile aggregate functions.
+func (s *RDBLogStore) getLatencyHistogramClickHouse(ctx context.Context, baseQuery *gorm.DB, filters SearchFilters, bucketSizeSeconds int64) (*LatencyHistogramResult, error) {
+	var results []struct {
+		BucketTimestamp int64           `gorm:"column:bucket_timestamp"`
+		AvgLatency      sql.NullFloat64 `gorm:"column:avg_latency"`
+		P90Latency      sql.NullFloat64 `gorm:"column:p90_latency"`
+		P95Latency      sql.NullFloat64 `gorm:"column:p95_latency"`
+		P99Latency      sql.NullFloat64 `gorm:"column:p99_latency"`
+		TotalRequests   int64           `gorm:"column:total_requests"`
+	}
+
+	selectClause := fmt.Sprintf(`
+		CAST(FLOOR(toUnixTimestamp(timestamp) / %d) * %d AS Int64) as bucket_timestamp,
+		AVG(latency) as avg_latency,
+		quantile(0.90)(latency) as p90_latency,
+		quantile(0.95)(latency) as p95_latency,
+		quantile(0.99)(latency) as p99_latency,
+		COUNT(*) as total_requests
+	`, bucketSizeSeconds, bucketSizeSeconds)
+
+	if err := baseQuery.
+		Select(selectClause).
+		Group("bucket_timestamp").
+		Order("bucket_timestamp ASC").
+		Find(&results).Error; err != nil {
+		return nil, fmt.Errorf("failed to get latency histogram: %w", err)
+	}
+
+	computedBuckets := make(map[int64]LatencyHistogramBucket, len(results))
+	var orderedKeys []int64
+	for _, r := range results {
+		orderedKeys = append(orderedKeys, r.BucketTimestamp)
+		computedBuckets[r.BucketTimestamp] = LatencyHistogramBucket{
+			Timestamp:     time.Unix(r.BucketTimestamp, 0).UTC(),
+			AvgLatency:    r.AvgLatency.Float64,
+			P90Latency:    r.P90Latency.Float64,
+			P95Latency:    r.P95Latency.Float64,
+			P99Latency:    r.P99Latency.Float64,
+			TotalRequests: r.TotalRequests,
+		}
+	}
+
+	return s.buildLatencyHistogramResult(computedBuckets, orderedKeys, filters, bucketSizeSeconds)
 }
 
 // getLatencyHistogramPercentileCont uses database-level percentile_cont for PostgreSQL.
@@ -2334,6 +2410,12 @@ func (s *RDBLogStore) GetProviderCostHistogram(ctx context.Context, filters Sear
 			provider,
 			COALESCE(SUM(cost), 0) as total_cost
 		`, bucketSizeSeconds, bucketSizeSeconds)
+	case "clickhouse":
+		selectClause = fmt.Sprintf(`
+			CAST(FLOOR(toUnixTimestamp(timestamp) / %d) * %d AS Int64) as bucket_timestamp,
+			provider,
+			COALESCE(SUM(cost), 0) as total_cost
+		`, bucketSizeSeconds, bucketSizeSeconds)
 	default:
 		selectClause = fmt.Sprintf(`
 			CAST(FLOOR(EXTRACT(EPOCH FROM timestamp) / %d) * %d AS BIGINT) as bucket_timestamp,
@@ -2450,6 +2532,14 @@ func (s *RDBLogStore) GetProviderTokenHistogram(ctx context.Context, filters Sea
 			COALESCE(SUM(completion_tokens), 0) as completion_tokens,
 			COALESCE(SUM(total_tokens), 0) as total_tokens
 		`, bucketSizeSeconds, bucketSizeSeconds)
+	case "clickhouse":
+		selectClause = fmt.Sprintf(`
+			CAST(FLOOR(toUnixTimestamp(timestamp) / %d) * %d AS Int64) as bucket_timestamp,
+			provider,
+			COALESCE(SUM(prompt_tokens), 0) as prompt_tokens,
+			COALESCE(SUM(completion_tokens), 0) as completion_tokens,
+			COALESCE(SUM(total_tokens), 0) as total_tokens
+		`, bucketSizeSeconds, bucketSizeSeconds)
 	default:
 		selectClause = fmt.Sprintf(`
 			CAST(FLOOR(EXTRACT(EPOCH FROM timestamp) / %d) * %d AS BIGINT) as bucket_timestamp,
@@ -2557,9 +2647,77 @@ func (s *RDBLogStore) GetProviderLatencyHistogram(ctx context.Context, filters S
 		return s.getProviderLatencyHistogramSQLite(ctx, baseQuery, filters, bucketSizeSeconds)
 	case "mysql":
 		return s.getProviderLatencyHistogramMySQL(ctx, baseQuery, filters, bucketSizeSeconds)
+	case "clickhouse":
+		return s.getProviderLatencyHistogramClickHouse(ctx, baseQuery, filters, bucketSizeSeconds)
 	default:
 		return s.getProviderLatencyHistogramPercentileCont(ctx, baseQuery, filters, bucketSizeSeconds)
 	}
+}
+
+// getProviderLatencyHistogramClickHouse uses ClickHouse's quantile aggregate functions.
+func (s *RDBLogStore) getProviderLatencyHistogramClickHouse(ctx context.Context, baseQuery *gorm.DB, filters SearchFilters, bucketSizeSeconds int64) (*ProviderLatencyHistogramResult, error) {
+	var results []struct {
+		BucketTimestamp int64           `gorm:"column:bucket_timestamp"`
+		Provider        string          `gorm:"column:provider"`
+		AvgLatency      sql.NullFloat64 `gorm:"column:avg_latency"`
+		P90Latency      sql.NullFloat64 `gorm:"column:p90_latency"`
+		P95Latency      sql.NullFloat64 `gorm:"column:p95_latency"`
+		P99Latency      sql.NullFloat64 `gorm:"column:p99_latency"`
+		TotalRequests   int64           `gorm:"column:total_requests"`
+	}
+
+	selectClause := fmt.Sprintf(`
+		CAST(FLOOR(toUnixTimestamp(timestamp) / %d) * %d AS Int64) as bucket_timestamp,
+		provider,
+		AVG(latency) as avg_latency,
+		quantile(0.90)(latency) as p90_latency,
+		quantile(0.95)(latency) as p95_latency,
+		quantile(0.99)(latency) as p99_latency,
+		COUNT(*) as total_requests
+	`, bucketSizeSeconds, bucketSizeSeconds)
+
+	if err := baseQuery.
+		Select(selectClause).
+		Group("bucket_timestamp, provider").
+		Order("bucket_timestamp ASC, provider ASC").
+		Find(&results).Error; err != nil {
+		return nil, fmt.Errorf("failed to get provider latency histogram: %w", err)
+	}
+
+	providersSet := make(map[string]bool)
+	computedBuckets := make(map[int64]*ProviderLatencyHistogramBucket)
+	var orderedBuckets []int64
+	seenBuckets := make(map[int64]bool)
+
+	for _, r := range results {
+		providersSet[r.Provider] = true
+		if !seenBuckets[r.BucketTimestamp] {
+			seenBuckets[r.BucketTimestamp] = true
+			orderedBuckets = append(orderedBuckets, r.BucketTimestamp)
+		}
+		stats := ProviderLatencyStats{
+			AvgLatency:    r.AvgLatency.Float64,
+			P90Latency:    r.P90Latency.Float64,
+			P95Latency:    r.P95Latency.Float64,
+			P99Latency:    r.P99Latency.Float64,
+			TotalRequests: r.TotalRequests,
+		}
+		if bucket, exists := computedBuckets[r.BucketTimestamp]; exists {
+			bucket.ByProvider[r.Provider] = stats
+		} else {
+			computedBuckets[r.BucketTimestamp] = &ProviderLatencyHistogramBucket{
+				Timestamp:  time.Unix(r.BucketTimestamp, 0).UTC(),
+				ByProvider: map[string]ProviderLatencyStats{r.Provider: stats},
+			}
+		}
+	}
+
+	providers := make([]string, 0, len(providersSet))
+	for provider := range providersSet {
+		providers = append(providers, provider)
+	}
+
+	return s.buildProviderLatencyHistogramResult(computedBuckets, orderedBuckets, providers, filters, bucketSizeSeconds)
 }
 
 // getProviderLatencyHistogramPercentileCont uses database-level percentile_cont for PostgreSQL.
@@ -2852,6 +3010,8 @@ func (s *RDBLogStore) GetDimensionCostHistogram(ctx context.Context, filters Sea
 	switch dialect {
 	case "sqlite":
 		bucketExpr = fmt.Sprintf("CAST((CAST(strftime('%%s', timestamp) AS INTEGER) / %d) * %d AS INTEGER)", bucketSizeSeconds, bucketSizeSeconds)
+	case "clickhouse":
+		bucketExpr = fmt.Sprintf("CAST(FLOOR(toUnixTimestamp(timestamp) / %d) * %d AS Int64)", bucketSizeSeconds, bucketSizeSeconds)
 	default:
 		bucketExpr = fmt.Sprintf("CAST(FLOOR(EXTRACT(EPOCH FROM timestamp) / %d) * %d AS BIGINT)", bucketSizeSeconds, bucketSizeSeconds)
 	}
@@ -2960,6 +3120,8 @@ func (s *RDBLogStore) GetDimensionTokenHistogram(ctx context.Context, filters Se
 	switch dialect {
 	case "sqlite":
 		bucketExpr = fmt.Sprintf("CAST((CAST(strftime('%%s', timestamp) AS INTEGER) / %d) * %d AS INTEGER)", bucketSizeSeconds, bucketSizeSeconds)
+	case "clickhouse":
+		bucketExpr = fmt.Sprintf("CAST(FLOOR(toUnixTimestamp(timestamp) / %d) * %d AS Int64)", bucketSizeSeconds, bucketSizeSeconds)
 	default:
 		bucketExpr = fmt.Sprintf("CAST(FLOOR(EXTRACT(EPOCH FROM timestamp) / %d) * %d AS BIGINT)", bucketSizeSeconds, bucketSizeSeconds)
 	}
@@ -3077,6 +3239,8 @@ func (s *RDBLogStore) GetDimensionLatencyHistogram(ctx context.Context, filters 
 	switch dialect {
 	case "sqlite":
 		bucketExpr = fmt.Sprintf("CAST((CAST(strftime('%%s', timestamp) AS INTEGER) / %d) * %d AS INTEGER)", bucketSizeSeconds, bucketSizeSeconds)
+	case "clickhouse":
+		bucketExpr = fmt.Sprintf("CAST(FLOOR(toUnixTimestamp(timestamp) / %d) * %d AS Int64)", bucketSizeSeconds, bucketSizeSeconds)
 	default:
 		bucketExpr = fmt.Sprintf("CAST(FLOOR(EXTRACT(EPOCH FROM timestamp) / %d) * %d AS BIGINT)", bucketSizeSeconds, bucketSizeSeconds)
 	}
@@ -3966,6 +4130,13 @@ func (s *RDBLogStore) GetMCPHistogram(ctx context.Context, filters MCPToolLogSea
 			SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
 			SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error
 		`, bucketSizeSeconds, bucketSizeSeconds)
+	case "clickhouse":
+		selectClause = fmt.Sprintf(`
+			CAST(FLOOR(toUnixTimestamp(timestamp) / %d) * %d AS Int64) as bucket_timestamp,
+			COUNT(*) as count,
+			SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
+			SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error
+		`, bucketSizeSeconds, bucketSizeSeconds)
 	default:
 		selectClause = fmt.Sprintf(`
 			CAST(FLOOR(EXTRACT(EPOCH FROM timestamp) / %d) * %d AS BIGINT) as bucket_timestamp,
@@ -4055,6 +4226,11 @@ func (s *RDBLogStore) GetMCPCostHistogram(ctx context.Context, filters MCPToolLo
 	case "mysql":
 		selectClause = fmt.Sprintf(`
 			(FLOOR(UNIX_TIMESTAMP(timestamp) / %d) * %d) as bucket_timestamp,
+			COALESCE(SUM(cost), 0) as total_cost
+		`, bucketSizeSeconds, bucketSizeSeconds)
+	case "clickhouse":
+		selectClause = fmt.Sprintf(`
+			CAST(FLOOR(toUnixTimestamp(timestamp) / %d) * %d AS Int64) as bucket_timestamp,
 			COALESCE(SUM(cost), 0) as total_cost
 		`, bucketSizeSeconds, bucketSizeSeconds)
 	default:

@@ -1,0 +1,37 @@
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "config_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "config.db"
+    }
+  },
+  "logs_store": {
+    "enabled": true,
+    "type": "clickhouse",
+    "config": {
+      "host": "localhost",
+      "port": "9000",
+      "user": "default",
+      "password": "",
+      "db_name": "bifrost",
+      "max_idle_conns": 5,
+      "max_open_conns": 50
+    }
+  },
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "name": "dev-key",
+          "value": "sk-test",
+          "models": ["gpt-4"]
+        }
+      ],
+      "network_config": {
+        "base_url": "http://localhost:9999"
+      }
+    }
+  }
+}
