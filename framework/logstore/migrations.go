@@ -525,6 +525,37 @@ func triggerClickhouseMigrations(ctx context.Context, db *gorm.DB) error {
 		return err
 	}
 
+	if err := m.apply("mcp_tool_logs_init", func(tx *gorm.DB) error {
+		return tx.Exec(`
+			CREATE TABLE IF NOT EXISTS mcp_tool_logs (
+				id String,
+				request_id Nullable(String),
+				llm_request_id Nullable(String),
+				timestamp DateTime64(3),
+				tool_name String,
+				server_label String,
+				virtual_key_id Nullable(String),
+				virtual_key_name Nullable(String),
+				user_id Nullable(String),
+				team_id Nullable(String),
+				customer_id Nullable(String),
+				business_unit_id Nullable(String),
+				arguments String,
+				result String,
+				error_details String,
+				latency Nullable(Float64),
+				cost Nullable(Float64),
+				status String,
+				metadata String,
+				has_object UInt8 DEFAULT 0,
+				created_at DateTime64(3)
+			) ENGINE = MergeTree()
+			ORDER BY (timestamp, id)
+		`).Error
+	}); err != nil {
+		return err
+	}
+
 	return nil
 }
 
