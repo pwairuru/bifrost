@@ -61,8 +61,8 @@ func TestJsonParserPluginEndToEnd(t *testing.T) {
 	// Initialize the JSON parser plugin for all requests
 	plugin, err := Init(PluginConfig{
 		Usage:           AllRequests,
-		CleanupInterval: 5 * time.Minute,
-		MaxAge:          30 * time.Minute,
+		CleanupInterval: schemas.Duration(5 * time.Minute),
+		MaxAge:          schemas.Duration(30 * time.Minute),
 	})
 	if err != nil {
 		t.Fatalf("Error initializing JSON parser plugin: %v", err)
@@ -160,8 +160,8 @@ func TestJsonParserPluginPerRequest(t *testing.T) {
 	// Initialize the JSON parser plugin for per-request usage
 	plugin, err := Init(PluginConfig{
 		Usage:           PerRequest,
-		CleanupInterval: 5 * time.Minute,
-		MaxAge:          30 * time.Minute,
+		CleanupInterval: schemas.Duration(5 * time.Minute),
+		MaxAge:          schemas.Duration(30 * time.Minute),
 	})
 	if err != nil {
 		t.Fatalf("Error initializing JSON parser plugin: %v", err)
@@ -284,8 +284,8 @@ func newResponsesStreamNonDeltaResponse(responseID string, eventType schemas.Res
 func TestPostLLMHookResponsesStreamDelta(t *testing.T) {
 	plugin, err := Init(PluginConfig{
 		Usage:           AllRequests,
-		CleanupInterval: 5 * time.Minute,
-		MaxAge:          30 * time.Minute,
+		CleanupInterval: schemas.Duration(5 * time.Minute),
+		MaxAge:          schemas.Duration(30 * time.Minute),
 	})
 	if err != nil {
 		t.Fatalf("failed to init plugin: %v", err)
@@ -320,8 +320,8 @@ func TestPostLLMHookResponsesStreamDelta(t *testing.T) {
 func TestPostLLMHookResponsesStreamNonDeltaPassthrough(t *testing.T) {
 	plugin, err := Init(PluginConfig{
 		Usage:           AllRequests,
-		CleanupInterval: 5 * time.Minute,
-		MaxAge:          30 * time.Minute,
+		CleanupInterval: schemas.Duration(5 * time.Minute),
+		MaxAge:          schemas.Duration(30 * time.Minute),
 	})
 	if err != nil {
 		t.Fatalf("failed to init plugin: %v", err)
@@ -356,8 +356,8 @@ func TestPostLLMHookResponsesStreamNonDeltaPassthrough(t *testing.T) {
 func TestPostLLMHookResponsesStreamDoesNotMutateOriginal(t *testing.T) {
 	plugin, err := Init(PluginConfig{
 		Usage:           AllRequests,
-		CleanupInterval: 5 * time.Minute,
-		MaxAge:          30 * time.Minute,
+		CleanupInterval: schemas.Duration(5 * time.Minute),
+		MaxAge:          schemas.Duration(30 * time.Minute),
 	})
 	if err != nil {
 		t.Fatalf("failed to init plugin: %v", err)
@@ -389,8 +389,8 @@ func TestPostLLMHookResponsesStreamDoesNotMutateOriginal(t *testing.T) {
 func TestPostLLMHookResponsesStreamPerRequest(t *testing.T) {
 	plugin, err := Init(PluginConfig{
 		Usage:           PerRequest,
-		CleanupInterval: 5 * time.Minute,
-		MaxAge:          30 * time.Minute,
+		CleanupInterval: schemas.Duration(5 * time.Minute),
+		MaxAge:          schemas.Duration(30 * time.Minute),
 	})
 	if err != nil {
 		t.Fatalf("failed to init plugin: %v", err)
@@ -438,8 +438,8 @@ func TestJsonParserPluginResponsesStreamEndToEnd(t *testing.T) {
 
 	plugin, err := Init(PluginConfig{
 		Usage:           AllRequests,
-		CleanupInterval: 5 * time.Minute,
-		MaxAge:          30 * time.Minute,
+		CleanupInterval: schemas.Duration(5 * time.Minute),
+		MaxAge:          schemas.Duration(30 * time.Minute),
 	})
 	if err != nil {
 		t.Fatalf("failed to init plugin: %v", err)
@@ -508,8 +508,8 @@ func TestJsonParserPluginResponsesStreamEndToEnd(t *testing.T) {
 func TestParsePartialJSON(t *testing.T) {
 	plugin, err := Init(PluginConfig{
 		Usage:           AllRequests,
-		CleanupInterval: 5 * time.Minute,
-		MaxAge:          30 * time.Minute,
+		CleanupInterval: schemas.Duration(5 * time.Minute),
+		MaxAge:          schemas.Duration(30 * time.Minute),
 	})
 	if err != nil {
 		t.Fatalf("Error initializing JSON parser plugin: %v", err)

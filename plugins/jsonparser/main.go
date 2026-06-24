@@ -42,9 +42,9 @@ type JsonParserPlugin struct {
 
 // PluginConfig holds configuration options for the JSON parser plugin
 type PluginConfig struct {
-	Usage           Usage
-	CleanupInterval time.Duration
-	MaxAge          time.Duration
+	Usage           Usage             `json:"usage"`
+	CleanupInterval schemas.Duration  `json:"cleanup_interval,omitempty"`
+	MaxAge          schemas.Duration  `json:"max_age,omitempty"`
 }
 
 const (
@@ -54,11 +54,13 @@ const (
 // Init creates a new JSON parser plugin instance with custom configuration
 func Init(config PluginConfig) (*JsonParserPlugin, error) {
 	// Set defaults if not provided
-	if config.CleanupInterval <= 0 {
-		config.CleanupInterval = 5 * time.Minute
+	cleanupInterval := config.CleanupInterval.D()
+	if cleanupInterval <= 0 {
+		cleanupInterval = 5 * time.Minute
 	}
-	if config.MaxAge <= 0 {
-		config.MaxAge = 30 * time.Minute
+	maxAge := config.MaxAge.D()
+	if maxAge <= 0 {
+		maxAge = 30 * time.Minute
 	}
 	if config.Usage == "" {
 		config.Usage = PerRequest
@@ -67,8 +69,8 @@ func Init(config PluginConfig) (*JsonParserPlugin, error) {
 	plugin := &JsonParserPlugin{
 		usage:              config.Usage,
 		accumulatedContent: make(map[string]*AccumulatedContent),
-		cleanupInterval:    config.CleanupInterval,
-		maxAge:             config.MaxAge,
+		cleanupInterval:    cleanupInterval,
+		maxAge:             maxAge,
 		stopCleanup:        make(chan struct{}),
 	}
 

@@ -42,6 +42,7 @@ import (
 	"github.com/maximhq/bifrost/plugins/compat"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/governance/complexity"
+	"github.com/maximhq/bifrost/plugins/jsonparser"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/plugins/maxim"
 	"github.com/maximhq/bifrost/plugins/otel"
@@ -129,6 +130,7 @@ var builtinPluginNames = []string{
 	semanticcache.PluginName,
 	compat.PluginName,
 	maxim.PluginName,
+	jsonparser.PluginName,
 }
 
 func GetBuiltinPluginNames() []string {
